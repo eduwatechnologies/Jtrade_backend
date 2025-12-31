@@ -9,8 +9,13 @@ connectDB();
 
 const app = express();
 
+const url = [
+  "https://www.jtradebackend-production.up.railway.app",
+  "http://localhost:3000",
+];
+
 app.use(express.json());
-app.use(cors("*"));
+app.use(cors({ origin: url }));
 
 app.get("/", (req, res) => {
   res.send("API is running...");
