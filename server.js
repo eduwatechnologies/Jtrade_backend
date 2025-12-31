@@ -9,10 +9,7 @@ connectDB();
 
 const app = express();
 
-const url = [
-  "https://www.jtradebackend-production.up.railway.app",
-  "http://localhost:3000",
-];
+const url = ["https://jtrade-jade.vercel.app", "http://localhost:3000"];
 
 app.use(express.json());
 app.use(cors({ origin: url }));
