@@ -16,6 +16,14 @@ const userSchema = mongoose.Schema(
       type: String,
       required: true,
     },
+    mt5ApiKeyHash: {
+      type: String,
+      index: true,
+      sparse: true,
+    },
+    mt5ApiKeyCreatedAt: {
+      type: Date,
+    },
     settings: {
       accountBalance: {
         type: Number,

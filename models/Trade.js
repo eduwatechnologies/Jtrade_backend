@@ -7,6 +7,20 @@ const tradeSchema = mongoose.Schema(
       required: true,
       ref: "User",
     },
+    source: {
+      type: String,
+      enum: ["manual", "mt5"],
+      default: "manual",
+    },
+    mt5AccountId: {
+      type: String,
+    },
+    mt5Ticket: {
+      type: String,
+    },
+    broker: {
+      type: String,
+    },
     strategy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Strategy",
@@ -84,10 +98,10 @@ const tradeSchema = mongoose.Schema(
   }
 );
 
-// Indexing for performance
 tradeSchema.index({ user: 1, tradeDate: -1 });
 tradeSchema.index({ user: 1, strategy: 1 });
 tradeSchema.index({ user: 1, externalId: 1 }, { unique: true, sparse: true });
+tradeSchema.index({ user: 1, mt5AccountId: 1, mt5Ticket: 1 }, { unique: true, sparse: true });
 
 const Trade = mongoose.model("Trade", tradeSchema);
 
