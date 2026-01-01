@@ -1,6 +1,54 @@
 const asyncHandler = require("express-async-handler");
 const Trade = require("../models/Trade");
 const Strategy = require("../models/Strategy");
+const TradingRule = require("../models/TradingRule");
+const { evaluateTradeRules } = require("../services/ruleService");
+
+// Helper to determine contract size
+const getContractSize = (asset, market) => {
+  if (!asset) return 1;
+
+  const cleanAsset = asset.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const cleanMarket = market ? market.toLowerCase() : "";
+
+  // Metals
+  if (cleanAsset.includes("XAU") || cleanAsset.includes("GOLD")) return 100;
+  if (cleanAsset.includes("XAG") || cleanAsset.includes("SILVER")) return 5000;
+
+  // Forex
+  // If market is explicitly forex, or if asset looks like a standard pair
+  if (cleanMarket === "forex") return 100000;
+
+  // Heuristic for Forex pairs if market is not specified
+  // Check if asset is 6 chars and consists of major currency codes
+  const majorCurrencies = [
+    "USD",
+    "EUR",
+    "GBP",
+    "JPY",
+    "AUD",
+    "CAD",
+    "CHF",
+    "NZD",
+  ];
+  if (cleanAsset.length === 6) {
+    const base = cleanAsset.substring(0, 3);
+    const quote = cleanAsset.substring(3, 6);
+    if (majorCurrencies.includes(base) && majorCurrencies.includes(quote)) {
+      return 100000;
+    }
+  }
+
+  // Indices (Common ones)
+  // Most indices have contract size 1, 10, or 20. 1 is a safer default than 100k.
+  // Ideally, user should configure this, but for now we default to 1.
+
+  // Crypto - usually 1
+  if (cleanMarket === "crypto") return 1;
+
+  // Default
+  return 1;
+};
 
 // Helper to calculate Risk/Reward
 const calculateRiskMetrics = (
@@ -8,18 +56,19 @@ const calculateRiskMetrics = (
   stopLoss,
   takeProfit,
   positionSize,
-  tradeType
+  tradeType,
+  contractSize = 1
 ) => {
   let risk = 0;
   let reward = 0;
   let rrRatio = 0;
 
   if (stopLoss) {
-    risk = Math.abs(entryPrice - stopLoss) * positionSize;
+    risk = Math.abs(entryPrice - stopLoss) * positionSize * contractSize;
   }
 
   if (takeProfit) {
-    reward = Math.abs(takeProfit - entryPrice) * positionSize;
+    reward = Math.abs(takeProfit - entryPrice) * positionSize * contractSize;
   }
 
   if (risk > 0 && reward > 0) {
@@ -98,14 +147,23 @@ const createTrade = asyncHandler(async (req, res) => {
     strategy,
     images,
     externalId,
+    profitLoss: providedProfitLoss,
   } = req.body;
+
+  // Calculate contract size
+  const contractSize = getContractSize(asset, market);
 
   // Calculate profit/loss and result
   let profitLoss = 0;
-  if (tradeType === "buy") {
-    profitLoss = (exitPrice - entryPrice) * positionSize;
+
+  if (providedProfitLoss !== undefined && providedProfitLoss !== null) {
+    profitLoss = providedProfitLoss;
   } else {
-    profitLoss = (entryPrice - exitPrice) * positionSize;
+    if (tradeType === "buy") {
+      profitLoss = (exitPrice - entryPrice) * positionSize * contractSize;
+    } else {
+      profitLoss = (entryPrice - exitPrice) * positionSize * contractSize;
+    }
   }
 
   let result = "break-even";
@@ -127,8 +185,23 @@ const createTrade = asyncHandler(async (req, res) => {
     stopLoss,
     takeProfit,
     positionSize,
-    tradeType
+    tradeType,
+    contractSize
   );
+
+  const tradeObjForEval = {
+    ...req.body,
+    profitLoss,
+    result,
+    risk,
+    reward,
+    rrRatio,
+    tradeDate: new Date(tradeDate),
+  };
+
+  // Evaluate Rules
+  const rules = await TradingRule.find({ user: req.user._id, isActive: true });
+  const ruleEvaluations = evaluateTradeRules(tradeObjForEval, rules);
 
   const trade = new Trade({
     user: req.user._id,
@@ -150,6 +223,7 @@ const createTrade = asyncHandler(async (req, res) => {
     rrRatio,
     images: images || [],
     externalId,
+    ruleEvaluations,
   });
 
   const createdTrade = await trade.save();
@@ -204,12 +278,17 @@ const updateTrade = asyncHandler(async (req, res) => {
     const ePrice = trade.entryPrice;
     const xPrice = trade.exitPrice;
     const pSize = trade.positionSize;
+    const cSize = getContractSize(trade.asset, trade.market);
 
     let pL = 0;
+    // Note: On update, we usually recalculate P/L because entry/exit/size might have changed.
+    // If the user manually updated P/L field? The body doesn't expose it above in destructuring.
+    // Assuming automatic recalculation is desired for consistency unless we add P/L to update body.
+
     if (tType === "buy") {
-      pL = (xPrice - ePrice) * pSize;
+      pL = (xPrice - ePrice) * pSize * cSize;
     } else {
-      pL = (ePrice - xPrice) * pSize;
+      pL = (ePrice - xPrice) * pSize * cSize;
     }
     trade.profitLoss = pL;
 
@@ -223,11 +302,21 @@ const updateTrade = asyncHandler(async (req, res) => {
       trade.stopLoss,
       trade.takeProfit,
       pSize,
-      tType
+      tType,
+      cSize
     );
     trade.risk = risk;
     trade.reward = reward;
     trade.rrRatio = rrRatio;
+
+    // Evaluate Rules on Update
+    const rules = await TradingRule.find({
+      user: req.user._id,
+      isActive: true,
+    });
+    // Construct full trade object for evaluation
+    const tradeObjForEval = trade.toObject();
+    trade.ruleEvaluations = evaluateTradeRules(tradeObjForEval, rules);
 
     const updatedTrade = await trade.save();
     res.json(updatedTrade);
@@ -387,13 +476,20 @@ const importTrades = asyncHandler(async (req, res) => {
     let profitLoss = tradeData.profitLoss;
     let tradeType = tradeData.tradeType || "buy";
 
-    if (profitLoss === undefined) {
+    // Calculate contract size
+    const contractSize = getContractSize(tradeData.asset, tradeData.market);
+
+    if (profitLoss === undefined || profitLoss === null) {
       if (tradeType.toLowerCase() === "buy") {
         profitLoss =
-          (tradeData.exitPrice - tradeData.entryPrice) * tradeData.positionSize;
+          (tradeData.exitPrice - tradeData.entryPrice) *
+          tradeData.positionSize *
+          contractSize;
       } else {
         profitLoss =
-          (tradeData.entryPrice - tradeData.exitPrice) * tradeData.positionSize;
+          (tradeData.entryPrice - tradeData.exitPrice) *
+          tradeData.positionSize *
+          contractSize;
       }
     }
 
@@ -409,7 +505,8 @@ const importTrades = asyncHandler(async (req, res) => {
       tradeData.stopLoss,
       tradeData.takeProfit,
       tradeData.positionSize,
-      tradeType.toLowerCase()
+      tradeType.toLowerCase(),
+      contractSize
     );
 
     // Find strategy by name if provided
@@ -442,6 +539,9 @@ const importTrades = asyncHandler(async (req, res) => {
       reward,
       rrRatio,
       strategy: strategyId,
+      externalId: `csv-${Date.now()}-${Math.random()
+        .toString(36)
+        .substr(2, 9)}`,
     });
 
     const savedTrade = await newTrade.save();

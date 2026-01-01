@@ -29,6 +29,7 @@ app.use("/api/trades", require("./routes/tradeRoutes"));
 app.use("/api/strategies", require("./routes/strategyRoutes"));
 app.use("/api/upload", require("./routes/uploadRoutes"));
 app.use("/api/mt5", require("./routes/mt5Routes"));
+app.use("/api/rules", require("./routes/ruleRoutes"));
 
 const __dirname_resolved = path.resolve();
 app.use("/uploads", express.static(path.join(__dirname_resolved, "/uploads")));

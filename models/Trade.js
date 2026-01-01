@@ -92,6 +92,17 @@ const tradeSchema = mongoose.Schema(
       type: String,
       description: "External ID from platform like MT5 (ticket number)",
     },
+    ruleEvaluations: [
+      {
+        rule: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "TradingRule",
+        },
+        ruleName: String,
+        passed: Boolean,
+        actualValue: mongoose.Schema.Types.Mixed,
+      },
+    ],
   },
   {
     timestamps: true,
@@ -101,7 +112,10 @@ const tradeSchema = mongoose.Schema(
 tradeSchema.index({ user: 1, tradeDate: -1 });
 tradeSchema.index({ user: 1, strategy: 1 });
 tradeSchema.index({ user: 1, externalId: 1 }, { unique: true, sparse: true });
-tradeSchema.index({ user: 1, mt5AccountId: 1, mt5Ticket: 1 }, { unique: true, sparse: true });
+tradeSchema.index(
+  { user: 1, mt5AccountId: 1, mt5Ticket: 1 },
+  { unique: true, partialFilterExpression: { source: "mt5" } }
+);
 
 const Trade = mongoose.model("Trade", tradeSchema);
 

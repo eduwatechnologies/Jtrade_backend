@@ -1,5 +1,7 @@
 const Trade = require("../models/Trade");
 const User = require("../models/User");
+const TradingRule = require("../models/TradingRule");
+const { evaluateTradeRules } = require("../services/ruleService");
 const { generateApiKey, hashApiKey } = require("../utils/apiKey");
 
 async function regenerateKey(req, res) {
@@ -14,7 +16,9 @@ async function regenerateKey(req, res) {
 }
 
 async function getKeyStatus(req, res) {
-  const user = await User.findById(req.user._id).select("mt5ApiKeyHash mt5ApiKeyCreatedAt");
+  const user = await User.findById(req.user._id).select(
+    "mt5ApiKeyHash mt5ApiKeyCreatedAt"
+  );
   res.json({
     hasKey: !!user.mt5ApiKeyHash,
     createdAt: user.mt5ApiKeyCreatedAt || null,
@@ -41,6 +45,9 @@ async function syncTrades(req, res) {
     return res.status(400).json({ message: "Invalid payload" });
   }
   const user = req.mt5User;
+  // Fetch active rules for user
+  const rules = await TradingRule.find({ user: user._id, isActive: true });
+
   let created = 0;
   let updated = 0;
   for (const t of trades) {
@@ -59,15 +66,28 @@ async function syncTrades(req, res) {
       entryPrice: Number(t.entryPrice),
       exitPrice: Number(t.exitPrice),
       positionSize: Number(t.volume),
-      stopLoss: typeof t.stopLoss !== "undefined" ? Number(t.stopLoss) : undefined,
-      takeProfit: typeof t.takeProfit !== "undefined" ? Number(t.takeProfit) : undefined,
+      stopLoss:
+        typeof t.stopLoss !== "undefined" ? Number(t.stopLoss) : undefined,
+      takeProfit:
+        typeof t.takeProfit !== "undefined" ? Number(t.takeProfit) : undefined,
       profitLoss: Number(t.profit),
-      result: Number(t.profit) > 0 ? "win" : Number(t.profit) < 0 ? "loss" : "break-even",
+      result:
+        Number(t.profit) > 0
+          ? "win"
+          : Number(t.profit) < 0
+          ? "loss"
+          : "break-even",
       notes: t.comment || "",
       tradeDate: new Date(t.datetime),
       externalId: String(t.ticket),
       rrRatio: typeof t.rrRatio !== "undefined" ? Number(t.rrRatio) : undefined,
+      risk: typeof t.risk !== "undefined" ? Number(t.risk) : undefined,
+      reward: typeof t.reward !== "undefined" ? Number(t.reward) : undefined,
     };
+
+    // Evaluate Rules
+    doc.ruleEvaluations = evaluateTradeRules(doc, rules);
+
     const existing = await Trade.findOne({
       user: user._id,
       mt5AccountId: doc.mt5AccountId,
